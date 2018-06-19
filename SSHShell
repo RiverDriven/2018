@@ -1,0 +1,478 @@
+package com.bk.core.utils;
+
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.net.URLDecoder;
+import java.nio.charset.Charset;
+import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.apache.log4j.Logger;
+import org.fusesource.jansi.AnsiOutputStream;
+
+import com.bk.core.exception.targetcli.TargetCliException;
+import com.bk.core.exception.targetcli.TargetCliException.CodeEnum;
+import com.bk.module.zfs.vo.SanClientSub.IscsiTarget;
+import com.jcraft.jsch.Channel;
+import com.jcraft.jsch.ChannelShell;
+import com.jcraft.jsch.JSch;
+import com.jcraft.jsch.JSchException;
+import com.jcraft.jsch.Session;
+
+public class SSHShell {
+	
+	private static final int WAIT_SECOND = 10;
+	private static Logger log = Logger.getLogger(SSHShell.class);
+	
+	private static AtomicInteger i = new AtomicInteger(0);
+	
+	public final int sshId = i.incrementAndGet();
+	
+	public volatile Boolean valid = true;
+	
+	private static JSch jsch;  
+	
+    private  Session session;  
+    
+    private  ChannelShell channelShell;
+
+	private  String host = "127.0.0.1"; //ConstantVO.default_url; 
+	
+	private static String user = "root";
+	
+	private String password = "缺省值";
+	
+	private static int port = 22;
+	
+	public static final String bug1 = "1B5B306D0D";
+	
+	/**
+	 * @param host
+	 * @param password
+	 */
+	public SSHShell(String host, String password) {
+		this.host = host;
+		this.password = password;
+	}
+	
+	/** 
+     * 连接到指定的IP 
+     *  
+     * @throws JSchException 
+     */  
+    public void connect() throws JSchException {  
+        jsch = new JSch();  
+        session = jsch.getSession(user, host, 22);  
+        session.setPassword(password);  
+          
+        java.util.Properties config = new java.util.Properties();  
+        config.put("StrictHostKeyChecking", "no");  
+        session.setConfig(config);  
+        //session.setTimeout(30*1000);
+        session.connect(30*1000);  
+        
+    }  
+    
+    public void initChannel() throws JSchException { 
+    	
+    	channelShell = (ChannelShell) session.openChannel("shell");
+    	channelShell.connect();
+    	try {
+			log.debug("连接初始化信息"+readData2Filter("",channelShell.getInputStream()));;
+			log.info("Channel初始化完成");
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (TargetCliException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+    	
+    }  
+    
+    
+    /**
+     * 读取文件内容
+     * @param cmdsWithoutLineSparator
+     * @return
+     * @throws IOException
+     */
+    public String execMultiCommand(String[] cmdsWithoutLineSparator) throws IOException{
+    	
+    	
+    	StringBuffer resultBuffer = new StringBuffer();
+    	
+    	InputStream inputStream = channelShell.getInputStream();
+        OutputStream outputStream = channelShell.getOutputStream();
+    	
+        PrintWriter printer = new PrintWriter(outputStream);
+
+       
+    	for (String cmd : cmdsWithoutLineSparator) {
+    		printer.print(cmd+"\n");
+    		
+		}
+    	
+    	printer.flush();
+		String result = readData2(inputStream);
+		//
+		//log.info("命令: "+cmd+"\n结果: "+result);
+		
+		resultBuffer.append(result);
+    	
+    	return resultBuffer.toString();
+    	
+    }
+    
+    /**
+     * 读取命令交互结果
+     * @param cmdsWithoutLineSparator
+     * @return
+     * @throws IOException
+     * @throws TargetCliException 
+     */
+    public String execMultiCommand2(String[] cmdsWithoutLineSparator) throws TargetCliException{
+    	
+    	String targetResult = "default";
+    	
+    	StringBuffer resultBuffer = new StringBuffer();
+    	
+    	InputStream inputStream;
+    	 OutputStream outputStream;
+		try {
+			inputStream = channelShell.getInputStream();
+			outputStream = channelShell.getOutputStream();
+			PrintWriter printer = new PrintWriter(outputStream);
+
+		       
+	    	for (int i = 0; i <= cmdsWithoutLineSparator.length-1;i++) {
+	    		
+	    		String cmd = cmdsWithoutLineSparator[i];
+	    		
+	    		printer.print(cmd+"\n");
+	    		printer.flush();
+	    		String result = readData2Filter(cmd,inputStream); 
+	    		
+	    		//log.debug("\n命令: "+cmd+"\n结果: \n"+result);
+	    		resultBuffer.append(result+"/n");
+	    		if(i == cmdsWithoutLineSparator.length-1){
+	    			targetResult = result;
+	    			log.info("\n命令: "+cmd+"\n预测目标结果: \n"+targetResult);
+	    		}
+	    		
+			}
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+       
+    	log.debug("当前所有命令结果: cmds->"+cmdsWithoutLineSparator+",result->"+resultBuffer.toString());
+        
+    	
+    	
+    	return targetResult;
+    	
+    }
+    
+    private Boolean isErrorMsg(){
+    	
+    	
+    	return false;
+    }
+    
+    private String readData(InputStream responseStream){
+    	BufferedReader in = new BufferedReader(new InputStreamReader(responseStream));
+
+    	StringBuffer responseBuffer = new StringBuffer();
+    	String msg = null;
+        try {
+			while((msg = in.readLine())!=null){
+			    //System.out.println(msg);
+			    responseBuffer.append(msg);
+			}
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+        
+        return responseBuffer.toString();
+    }
+    
+    private String readData2(InputStream responseStream){
+    	StringBuffer msg = new StringBuffer();
+    	byte[] tmp=new byte[65535];
+        String temp = null;
+        try {
+        while(true){
+        	
+        	try{Thread.sleep(1000);}catch(Exception ee){}
+        	
+				if(!(responseStream.available()>0)){
+					break;
+				}
+			
+            while(responseStream.available()>0){
+                int i=responseStream.read(tmp, 0, 65535);
+                if(i<0)break;
+                
+
+                temp = new String(tmp, 0, i,Charset.forName("utf8"));
+                System.out.println(temp);
+ 
+                
+                msg.append(temp);
+            }
+            if(channelShell.isClosed()){
+                if(responseStream.available()>0) continue;
+                System.out.println("exit-status: "+channelShell.getExitStatus());
+                break;
+            }
+          
+            //try{Thread.sleep(1000);}catch(Exception ee){}
+        }
+        } 
+        catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+        
+        return msg.toString();
+    }
+    
+    /**
+     * 针对ansi escape code 进行过滤
+     * @param responseStream
+     * @return
+     * @throws TargetCliException 
+     */
+    private String readData2Filter(String cmd,InputStream responseStream) throws TargetCliException{
+
+    	
+    	Boolean isError = false;
+    	
+    	ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+    	//wrapper类  write()
+        AnsiOutputStream asAnsiOutputStream = new AnsiOutputStream(outputStream);
+    	StringBuffer msg = new StringBuffer();
+    	byte[] tmp=new byte[65535];
+        String temp = null;
+        try {
+        while(true){
+        	try{Thread.sleep(1000);}catch(Exception ee){}
+        	
+				if(!(responseStream.available()>0)){
+					break;
+				}
+			
+            while(responseStream.available()>0){
+                int i=responseStream.read(tmp, 0, 65535);
+                if(i<0)break;
+                String detectedStr  = "";       
+               // System.out.println(new String(tmp,"utf8"));
+                if((detectedStr=new String(tmp,"utf8")).indexOf("[31m") != -1){
+                	//throw new TargetCliException(message)
+                	isError = true;
+                }
+                
+                asAnsiOutputStream.write(tmp,0,i);
+                
+            }
+            if(channelShell.isClosed()){
+                if(responseStream.available()>0) continue;
+                System.out.println("exit-status: "+channelShell.getExitStatus());
+                break;
+            }
+          
+            //try{Thread.sleep(1000);}catch(Exception ee){}
+        }
+        
+        //outputstream接收结束
+        ByteArrayInputStream swapStream = new ByteArrayInputStream(outputStream.toByteArray());
+        tmp=new byte[65535];
+        temp = null;
+        
+        while(true){
+        	
+        	try{Thread.sleep(200);}catch(Exception ee){}
+        	
+				if(!(swapStream.available()>0)){
+					break;
+				}
+			
+            while(swapStream.available()>0){
+                int i=swapStream.read(tmp, 0, 65535);
+                if(i<0)break;
+                    
+               // outputStream.write(tmp,0,i);
+                
+                temp = new String(tmp, 0, i,Charset.forName("utf8"));
+                //System.out.println(temp);
+               /* System.out.println(URLDecoder.decode(temp, "utf8"));
+                System.out.println(URLe);*/
+               // temp = new String(tmp, 0, i,Charset.forName("utf8"));
+                //temp = gbEncoding(temp);
+               // System.out.println(tmp.toString());
+
+               
+                //System.out.print(temp);
+                msg.append(temp);
+            }
+            if(channelShell.isClosed()){
+                if(swapStream.available()>0) continue;
+                System.out.println("exit-status: "+channelShell.getExitStatus());
+                break;
+            }
+          
+            //try{Thread.sleep(1000);}catch(Exception ee){}
+        }
+        
+        } 
+        catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+        
+        //返回结果格式化: 1.去除原命令 2.去除命令符
+        String realResult = msg.toString()
+        		.replace(cmd+"\r\n", "")
+        		.replace(cmd+"\n", "")
+        		.replaceAll("/(.*?)>", "");
+        if(isError){
+        	throw new TargetCliException(realResult.trim());
+        }
+        
+        if(realResult.contains("[Y/n]")){
+        	
+        	throw new TargetCliException(realResult.trim(),CodeEnum.等待确认.code());
+        	
+        }
+        
+        
+        return realResult.trim();
+    }
+    
+    private String resultFormat(StringBuffer output,String cmd){
+    	
+    	
+    	
+		return host;
+    }
+    
+    public void close(){
+    	
+    	 if(channelShell!=null){
+         	OutputStream outputStream;
+				try {
+					outputStream = channelShell.getOutputStream();
+					//写入该流的所有数据都将发送到远程端。
+	                //使用PrintWriter流的目的就是为了使用println这个方法
+	                //好处就是不需要每次手动给字符串加\n
+	                PrintWriter printWriter = new PrintWriter(outputStream);
+	                printWriter.println("exit");//加上个就是为了，结束本次交互
+	                printWriter.flush();
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+				channelShell.disconnect();  
+         }
+    	
+    	 session.disconnect();  
+    	
+    }
+    
+    public static String bytesToHexString(byte[] src){  
+	    StringBuilder stringBuilder = new StringBuilder("");  
+	    if (src == null || src.length <= 0) {  
+	        return null;  
+	    }  
+	    for (int i = 0; i < src.length; i++) {  
+	        int v = src[i] & 0xFF;  
+	        String hv = Integer.toHexString(v);  
+	        if (hv.length() < 2) {  
+	            stringBuilder.append(0);  
+	        }  
+	        stringBuilder.append(hv);  
+	    }  
+	    return stringBuilder.toString();  
+	}  
+	
+    public static void main(String[] args) {
+		
+    	
+    	
+	}
+    
+    private static String removeANSIEscapeSequences(String formatMsg){
+    	
+    	Pattern r = null;
+		Matcher m = null;
+		
+		//String formatMsg = "targetcli\r\ntargetcli 3.0.pre4.1~ga55d018 (rtslib 3.0.pre4.1~g1b33ceb)\r\nCopyright (c) 2011-2014 by Datera, Inc.\r\nAll rights reserved.\u001B[0m\r\n\u001B[0m\r\n/>";
+			r = Pattern.compile("\\x1B\\[[0-?]*[ -/]*[@-~]");
+					
+			m = r.matcher(formatMsg);
+			
+			if (m.find()) {
+				
+				for (int i = 0; i < m.groupCount(); i++) {
+					formatMsg = formatMsg.replace(m.group(i), "");
+				}
+				/*for (int i = 0; i < m.group(); i++) {
+					
+				}*/
+				//System.out.println(formatMsg.replace(m.group(0), ""));
+				
+				/*System.out.println(m.group(1));
+				System.out.println(m.group(2));*/
+			
+			}
+			
+		return	formatMsg;
+    }
+    
+    public static String gbEncoding(final String gbString) {   //gbString = "测试"  
+        char[] utfBytes = gbString.toCharArray();   //utfBytes = [测, 试]  
+        String unicodeBytes = "";     
+        for (int byteIndex = 0; byteIndex < utfBytes.length; byteIndex++) {     
+            String hexB = Integer.toHexString(utfBytes[byteIndex]);   //转换为16进制整型字符串  
+              if (hexB.length() <= 2) {     
+                  hexB = "00" + hexB;     
+             }     
+             unicodeBytes = unicodeBytes + "\\u" + hexB;     
+        }     
+        System.out.println("unicodeBytes is: " + unicodeBytes);     
+        return unicodeBytes;     
+    }  
+
+
+//Unicode转中文  
+    public static String decodeUnicode(final String dataStr) {     
+       int start = 0;     
+       int end = 0;     
+       final StringBuffer buffer = new StringBuffer();     
+       while (start > -1) {     
+           end = dataStr.indexOf("\\u", start + 2);     
+           String charStr = "";     
+           if (end == -1) {     
+               charStr = dataStr.substring(start + 2, dataStr.length());     
+           } else {     
+               charStr = dataStr.substring(start + 2, end);     
+           }     
+           char letter = (char) Integer.parseInt(charStr, 16); // 16进制parse整形字符串。     
+           buffer.append(new Character(letter).toString());     
+           start = end;     
+       }     
+       return buffer.toString();     
+    }  
+
+}
